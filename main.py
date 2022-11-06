@@ -20,6 +20,7 @@ logger.setLevel(logging.DEBUG)
 file_data = None
 original_data = None
 data_frame = None
+ANOMALY_REMOVED_TIMES = 0
 
 VALUES_KEY = 'variation'
 FREQ_OF_VALUES_KEY = 'frequency'
@@ -59,6 +60,7 @@ with demo:
                     variation_data_frame = gradio.Dataframe()
                 with gradio.Column():
                     variation_plot = gradio.Plot()
+                    probability_paper = gradio.Plot()
 
         with gradio.TabItem("Розбиття на класи") as tab:
             gradio.Markdown("Пункти 3, 4 ,5")
@@ -74,19 +76,32 @@ with demo:
             gradio.Markdown("Пункт 6")
             with gradio.Row():
                 characteristics_output = gradio.Dataframe()
+        with gradio.TabItem("Аномалії"):
+            gradio.Markdown("Пункт 7")
+            anomaly_counter = gradio.Textbox()
+            with gradio.Row():
+                with gradio.Column():
+                    anomalies_list = gradio.Textbox(label="Аномальні значення", lines=6)
+                    anomaly_button = gradio.Button("Прибрати аномальні значення")
+                with gradio.Column():
+                    anomaly_plot = gradio.Plot()
 
 
 
-    def main(file_obj):
+    def main(file_obj, remove_anomaly=False):
+        #Варіант 12 Нормальний  ЗГОДА: Колмогорова
         global data_frame, file_data, original_data
+        if remove_anomaly:
+            anomaly_values = find_anomaly_values()[anomalies_list]
+            original_data = [x for x in original_data if x not in anomaly_values]
+        else:
+            if file_obj is None:
+                return {file_output: "Завантажте спочатку файл!"}
 
-        if file_obj is None:
-            return {file_output: "Завантажте спочатку файл!"}
-
-        with open(file_obj.name, "r") as source:
-            original_data = [float(i) for i in source.read().split(sep="\n")]
-            file_data = Counter(original_data)
-        logger.info(f"File {file_obj.name} is uploaded")
+            with open(file_obj.name, "r") as source:
+                original_data = [float(i) for i in source.read().split(sep="\n")]
+                logger.info(f"File {file_obj.name} is uploaded")
+        file_data = Counter(original_data)
 
         data_frame = pd.DataFrame(sorted(file_data.items()), columns=[VALUES_KEY, FREQ_OF_VALUES_KEY])
 
@@ -101,7 +116,9 @@ with demo:
             variation_plot: fig,
             classes_data_frame: pre_classes_calc[classes_data_frame],
             classes_plot: pre_classes_calc[classes_plot],
-            **calculate_characteristics()
+            **calculate_characteristics(),
+            **find_anomaly_values(),
+            **calculate_paper(data_frame[VALUES_KEY], data_frame[FREQ_DIVIDE_LEN_KEY])
         }
 
     def classes_calculator(M_=None, B_=None):
@@ -214,15 +231,72 @@ with demo:
         char_df["INTERVAL"] = [(mean_min, mean_max), (med_min, med_max), (dev_min, dev_max), (coef_skew_min, coef_skew_max), (coef_kurt_min, coef_kurt_max), None, None, None]
         return {characteristics_output: char_df}
 
+    #Пункт 7
+    def find_anomaly_values():
+        """
+        1. Calculate [a; b]
+        2. Evaluate data, write anomalies to the list
+        3. Draw the plot
+        :return: lists and plot
+        """
+        sorted_original_data = sorted(original_data)
+        DATA_LEN = len(sorted_original_data)
+        MEAN = sum(sorted_original_data) / DATA_LEN
+        S_standart_deviation = math.sqrt(sum([(x - MEAN)**2 for x in sorted_original_data]) / (DATA_LEN-1))
+        #U is 1.96, because alpha is 5%
+        U1a2 = 1.96
+        a = MEAN - U1a2 * S_standart_deviation
+        b = MEAN + U1a2 * S_standart_deviation
+        RANGE = (a, b)
+
+        anomaly_values = []
+        for x in original_data:
+            if not a <= x <= b:
+                anomaly_values.append(x)
+
+        fig = plt.figure()
+        plt.scatter(list(range(DATA_LEN)), original_data)
+        plt.title('Графік емпіричної функції розподілу')
+        plt.ylabel('Значення x')
+        plt.xlabel('Індекси')
+        plt.axhline(y=a, color='r', linestyle='-')
+        plt.axhline(y=b, color='r', linestyle='-')
+        return {
+            anomalies_list: anomaly_values,
+            anomaly_plot: fig,
+            anomaly_counter: f"Size = {DATA_LEN} Anomaly = {ANOMALY_REMOVED_TIMES}"
+        }
+
+    def anomaly_main_wrapper(file_obj):
+        global ANOMALY_REMOVED_TIMES
+        ANOMALY_REMOVED_TIMES += 1
+        return main(file_obj, remove_anomaly=True)
+
+    #Пункт 8
+    def calculate_paper(X_array, F_x):
+        fig = plt.figure()
+        # t = list(X_array)
+        # z = [scipy.stats.norm.ppf(f_x) for f_x in list(F_x)]
+        scipy.stats.probplot(original_data, plot=plt)
+        #plt.scatter(t, z)
+        return {probability_paper: fig}
+
     file_upload_button.click(
         fn=main,
         inputs=[file_upload],
-        outputs=[file_output, variation_data_frame, variation_plot, classes_data_frame, classes_plot, characteristics_output]
+        outputs=[file_output, variation_data_frame, variation_plot, classes_data_frame, classes_plot,
+                 characteristics_output, anomalies_list, anomaly_plot, anomaly_counter, probability_paper]
     )
     classes_button.click(
         fn=classes_calculator,
         inputs=[classes_input, bandwidth_input],
         outputs=[classes_data_frame, classes_plot]
+    )
+    anomaly_button.click(
+        fn=anomaly_main_wrapper,
+        inputs=[file_upload],
+        outputs=[file_output, variation_data_frame, variation_plot, classes_data_frame, classes_plot,
+                 characteristics_output, anomalies_list, anomaly_plot, anomaly_counter, probability_paper]
     )
 
 demo.launch(debug=True)
